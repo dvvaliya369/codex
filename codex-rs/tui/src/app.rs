@@ -1185,6 +1185,15 @@ impl App {
         let mut thread_created_rx = thread_manager.subscribe_thread_created();
         let mut listen_for_threads = true;
 
+        // Install signal handlers for graceful shutdown on Unix platforms.
+        // This prevents silent crashes when the process receives SIGTERM, SIGINT, or SIGHUP.
+        #[cfg(unix)]
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        #[cfg(unix)]
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        #[cfg(unix)]
+        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+
         let exit_reason = loop {
             let control = select! {
                 Some(event) = app_event_rx.recv() => {
@@ -1221,6 +1230,24 @@ impl App {
                         }
                     }
                     AppRunControl::Continue
+                }
+                // Handle SIGTERM for graceful shutdown (e.g., from system or process manager).
+                #[cfg(unix)]
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM, initiating graceful shutdown");
+                    AppRunControl::Exit(ExitReason::UserRequested)
+                }
+                // Handle SIGINT (Ctrl-C) for graceful shutdown.
+                #[cfg(unix)]
+                _ = sigint.recv() => {
+                    tracing::info!("Received SIGINT, initiating graceful shutdown");
+                    AppRunControl::Exit(ExitReason::UserRequested)
+                }
+                // Handle SIGHUP for graceful shutdown (e.g., terminal disconnect).
+                #[cfg(unix)]
+                _ = sighup.recv() => {
+                    tracing::info!("Received SIGHUP, initiating graceful shutdown");
+                    AppRunControl::Exit(ExitReason::UserRequested)
                 }
             };
             match control {

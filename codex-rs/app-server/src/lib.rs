@@ -354,6 +354,34 @@ pub async fn run_main_with_transport(
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
         async move {
             let mut listen_for_threads = true;
+
+            // Install signal handlers for graceful shutdown on Unix platforms.
+            // This prevents silent crashes when the process receives SIGTERM, SIGINT, or SIGHUP.
+            #[cfg(unix)]
+            let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to install SIGTERM handler: {}", e);
+                    return;
+                }
+            };
+            #[cfg(unix)]
+            let mut sigint = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to install SIGINT handler: {}", e);
+                    return;
+                }
+            };
+            #[cfg(unix)]
+            let mut sighup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to install SIGHUP handler: {}", e);
+                    return;
+                }
+            };
+
             loop {
                 tokio::select! {
                     event = transport_event_rx.recv() => {
@@ -422,6 +450,24 @@ pub async fn run_main_with_transport(
                                 listen_for_threads = false;
                             }
                         }
+                    }
+                    // Handle SIGTERM for graceful shutdown (e.g., from system or process manager).
+                    #[cfg(unix)]
+                    _ = sigterm.recv() => {
+                        info!("Received SIGTERM, initiating graceful shutdown");
+                        break;
+                    }
+                    // Handle SIGINT (Ctrl-C) for graceful shutdown.
+                    #[cfg(unix)]
+                    _ = sigint.recv() => {
+                        info!("Received SIGINT, initiating graceful shutdown");
+                        break;
+                    }
+                    // Handle SIGHUP for graceful shutdown (e.g., terminal disconnect).
+                    #[cfg(unix)]
+                    _ = sighup.recv() => {
+                        info!("Received SIGHUP, initiating graceful shutdown");
+                        break;
                     }
                 }
             }
