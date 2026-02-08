@@ -449,6 +449,15 @@ fn walker_worker(
                 return ignore::WalkState::Continue;
             };
             if let Some((_, relative_path)) = get_file_path(path, &search_directories) {
+                // On Windows the walker returns backslash-separated paths
+                // (e.g. `src\main.rs`), but users type forward slashes.
+                // Nucleo's `match_paths()` config treats both `/` and `\` as
+                // delimiters for scoring bonuses, but does NOT normalise one
+                // to the other during character comparison.  Normalising the
+                // haystack to forward slashes ensures the user's `/` matches.
+                #[cfg(windows)]
+                let relative_path: &str =
+                    &relative_path.replace('\\', "/");
                 injector.push(Arc::from(full_path), |_, cols| {
                     cols[0] = Utf32String::from(relative_path);
                 });
@@ -545,6 +554,13 @@ fn matcher_worker(
                             } else {
                                 None
                             };
+                            // On Windows, normalise backslashes to forward
+                            // slashes so the displayed path and the text
+                            // inserted on completion use the same separator
+                            // as the fuzzy-match haystack (see walker_worker).
+                            #[cfg(windows)]
+                            let relative_path: &str =
+                                &relative_path.replace('\\', "/");
                             Some(FileMatch {
                                 score: match_.score,
                                 path: PathBuf::from(relative_path),

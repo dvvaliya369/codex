@@ -2970,10 +2970,19 @@ impl ChatComposer {
             return;
         }
 
-        if query.is_empty() {
-            self.app_event_tx
-                .send(AppEvent::StartFileSearch(String::new()));
+        // Only send the event when the query actually changed to avoid
+        // flooding the event channel with redundant `StartFileSearch`
+        // messages on every keystroke (e.g. cursor movement within the
+        // same `@token`).  The previous code sent the event on every
+        // `sync_popups` call which could delay processing of the
+        // corresponding `FileSearchResult` events.
+        let query_changed = if query.is_empty() {
+            self.current_file_query.is_some()
         } else {
+            self.current_file_query.as_ref() != Some(&query)
+        };
+
+        if query_changed {
             self.app_event_tx
                 .send(AppEvent::StartFileSearch(query.clone()));
         }

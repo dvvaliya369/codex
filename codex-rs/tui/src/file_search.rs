@@ -9,6 +9,8 @@ use codex_file_search as file_search;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -79,6 +81,7 @@ impl FileSearchManager {
             state: self.state.clone(),
             app_tx: self.app_tx.clone(),
             session_token,
+            sent_update: AtomicBool::new(false),
         });
         let session = file_search::create_session(
             &self.search_dir,
@@ -102,6 +105,10 @@ struct TuiSessionReporter {
     state: Arc<Mutex<SearchState>>,
     app_tx: AppEventSender,
     session_token: usize,
+    /// Tracks whether at least one snapshot was successfully sent for the
+    /// current session so that `on_complete` can emit a fallback result when
+    /// the matcher never produced a `status.changed` tick.
+    sent_update: AtomicBool,
 }
 
 impl TuiSessionReporter {
@@ -116,6 +123,7 @@ impl TuiSessionReporter {
         }
         let query = snapshot.query.clone();
         drop(st);
+        self.sent_update.store(true, Ordering::Relaxed);
         self.app_tx.send(AppEvent::FileSearchResult {
             query,
             matches: snapshot.matches.clone(),
@@ -128,5 +136,26 @@ impl file_search::SessionReporter for TuiSessionReporter {
         self.send_snapshot(snapshot);
     }
 
-    fn on_complete(&self) {}
+    fn on_complete(&self) {
+        // When the matcher finishes without ever sending a snapshot (e.g. the
+        // walker found no files, or `nucleo.tick()` never reported
+        // `status.changed`), the popup stays stuck on "loading..." because
+        // `set_matches` is never called.  Send a fallback empty-result so the
+        // UI can transition to "no matches".  We only do this when no prior
+        // update was delivered to avoid overwriting valid results.
+        if self.sent_update.load(Ordering::Relaxed) {
+            return;
+        }
+        #[expect(clippy::unwrap_used)]
+        let st = self.state.lock().unwrap();
+        if st.session_token != self.session_token || st.latest_query.is_empty() {
+            return;
+        }
+        let query = st.latest_query.clone();
+        drop(st);
+        self.app_tx.send(AppEvent::FileSearchResult {
+            query,
+            matches: Vec::new(),
+        });
+    }
 }
