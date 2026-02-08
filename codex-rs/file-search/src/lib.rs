@@ -410,8 +410,9 @@ fn walker_worker(
         .threads(inner.threads)
         // Allow hidden entries.
         .hidden(false)
-        // Follow symlinks to search their contents.
-        .follow_links(true)
+        // Don't follow symlinks on Windows to avoid hangs.
+        // On Unix, follow symlinks to search their contents.
+        .follow_links(cfg!(unix))
         // Don't require git to be present to apply to apply git-related ignore rules.
         .require_git(false);
     if !inner.respect_gitignore {
