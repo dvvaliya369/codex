@@ -125,15 +125,60 @@ impl Command for DisableAlternateScroll {
 }
 
 fn restore_common(should_disable_raw_mode: bool) -> Result<()> {
+    // Log terminal state before restoration for diagnostics
+    tracing::debug!(
+        should_disable_raw_mode,
+        stdout_is_terminal = std::io::IsTerminal::is_terminal(&stdout()),
+        "Restoring terminal state"
+    );
+
     // Pop may fail on platforms that didn't support the push; ignore errors.
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
-    execute!(stdout(), DisableBracketedPaste)?;
-    let _ = execute!(stdout(), DisableFocusChange);
-    if should_disable_raw_mode {
-        disable_raw_mode()?;
+    
+    // Try to disable bracketed paste, but don't fail if it doesn't work
+    if let Err(e) = execute!(stdout(), DisableBracketedPaste) {
+        tracing::warn!("Failed to disable bracketed paste: {e}");
     }
+    
+    let _ = execute!(stdout(), DisableFocusChange);
+    
+    if should_disable_raw_mode {
+        if let Err(e) = disable_raw_mode() {
+            tracing::error!("Failed to disable raw mode: {e}");
+            // Try emergency terminal reset
+            emergency_terminal_reset();
+            return Err(e);
+        }
+    }
+    
+    // Always try to show cursor, even if other operations failed
     let _ = execute!(stdout(), crossterm::cursor::Show);
+    
+    tracing::debug!("Terminal state restored successfully");
     Ok(())
+}
+
+/// Emergency terminal reset when normal restoration fails
+fn emergency_terminal_reset() {
+    use std::io::Write;
+    
+    tracing::warn!("Attempting emergency terminal reset");
+    
+    // Send terminal reset sequence
+    // ESC c - Full reset
+    let _ = write!(stdout(), "\x1bc");
+    
+    // Also try the softer reset
+    // ESC [ ! p - Soft terminal reset  
+    let _ = write!(stdout(), "\x1b[!p");
+    
+    // Show cursor
+    let _ = write!(stdout(), "\x1b[?25h");
+    
+    // Disable alternate screen if it's active
+    let _ = write!(stdout(), "\x1b[?1049l");
+    
+    let _ = stdout().flush();
 }
 
 /// Restore the terminal to its original state.
@@ -216,19 +261,12 @@ pub fn init() -> Result<Terminal> {
 
     flush_terminal_input_buffer();
 
-    set_panic_hook();
+    // Note: panic hook is set in lib.rs run_ratatui_app() to consolidate
+    // crash diagnostics, terminal restoration, and color-eyre integration.
 
     let backend = CrosstermBackend::new(stdout());
     let tui = CustomTerminal::with_options(backend)?;
     Ok(tui)
-}
-
-fn set_panic_hook() {
-    let hook = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
-        let _ = restore(); // ignore any errors as we are already failing
-        hook(panic_info);
-    }));
 }
 
 #[derive(Clone, Debug)]

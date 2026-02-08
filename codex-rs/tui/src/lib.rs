@@ -111,6 +111,9 @@ mod updates;
 mod version;
 
 mod wrapping;
+mod crash_diagnostics;
+#[cfg(unix)]
+mod signal_handler;
 
 #[cfg(test)]
 pub mod test_backend;
@@ -421,15 +424,30 @@ async fn run_ratatui_app(
 
     tooltips::announcement::prewarm();
 
-    // Forward panic reports through tracing so they appear in the UI status
-    // line, but do not swallow the default/color-eyre panic handler.
-    // Chain to the previous hook so users still get a rich panic report
-    // (including backtraces) after we restore the terminal.
+    // Initialize crash diagnostics tracking
+    crash_diagnostics::init();
+
+    // Consolidated panic hook: write diagnostics, restore terminal, forward to color-eyre
+    // This replaces both the panic hook in tui.rs and the one that was here.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // Write crash diagnostics before attempting terminal restoration
+        crash_diagnostics::write_crash_diagnostics("panic", Some(info));
+        
+        // Log to tracing so it appears in the UI status line if possible
         tracing::error!("panic: {info}");
+        
+        // Attempt to restore terminal (ignore errors, we're already panicking)
+        let _ = tui::restore();
+        
+        // Forward to color-eyre for rich panic report
         prev_hook(info);
     }));
+    
+    // Spawn signal handler on Unix platforms
+    #[cfg(unix)]
+    let mut shutdown_rx = signal_handler::spawn_signal_handler();
+    
     let mut terminal = tui::init()?;
     terminal.clear()?;
 
