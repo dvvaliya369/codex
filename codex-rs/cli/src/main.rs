@@ -550,6 +550,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
+    // Install a last-resort crash handler that persists panic/signal
+    // information to ~/.codex/crash.log. This is critical on macOS where
+    // process hardening (PT_DENY_ATTACH + RLIMIT_CORE=0) prevents the
+    // system crash reporter from generating .crash/.ips files.
+    codex_process_hardening::install_crash_handler();
+
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,

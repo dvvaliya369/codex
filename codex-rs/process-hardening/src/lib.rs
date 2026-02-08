@@ -4,6 +4,10 @@ use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 
+mod crash_report;
+
+pub use crash_report::install_crash_handler;
+
 /// This is designed to be called pre-main() (using `#[ctor::ctor]`) to perform
 /// various process hardening steps, such as
 /// - disabling core dumps

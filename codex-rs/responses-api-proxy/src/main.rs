@@ -4,6 +4,7 @@ use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 #[ctor::ctor]
 fn pre_main() {
     codex_process_hardening::pre_main_hardening();
+    codex_process_hardening::install_crash_handler();
 }
 
 pub fn main() -> anyhow::Result<()> {

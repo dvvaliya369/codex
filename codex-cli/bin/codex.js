@@ -119,6 +119,19 @@ const packageManagerEnvVar =
     : "CODEX_MANAGED_BY_NPM";
 env[packageManagerEnvVar] = "1";
 
+// Install last-resort error handlers so that unexpected failures in the
+// Node.js wrapper are logged to stderr rather than silently swallowed.
+process.on("uncaughtException", (err) => {
+  // eslint-disable-next-line no-console
+  console.error("codex: uncaught exception in wrapper:", err);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  // eslint-disable-next-line no-console
+  console.error("codex: unhandled rejection in wrapper:", reason);
+  process.exit(1);
+});
+
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
   env,

@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 lazy_static! {
     static ref PROMPT_ARG_REGEX: Regex =
-        Regex::new(r"\$[A-Z][A-Z0-9_]*").unwrap_or_else(|_| std::process::abort());
+        Regex::new(r"\$[A-Z][A-Z0-9_]*").unwrap_or_else(|e| panic!("PROMPT_ARG_REGEX failed to compile: {e}"));
 }
 
 #[derive(Debug)]
