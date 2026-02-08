@@ -62,7 +62,9 @@ impl Client {
         {
             base_url = format!("{base_url}/backend-api");
         }
-        let http = reqwest::Client::builder().build()?;
+        // Use no_proxy to avoid a bug in the system-configuration crate that
+        // can result in a panic. See #8912.
+        let http = reqwest::Client::builder().no_proxy().build()?;
         let path_style = PathStyle::from_base_url(&base_url);
         Ok(Self {
             base_url,

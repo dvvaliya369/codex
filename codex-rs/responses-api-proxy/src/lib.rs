@@ -86,10 +86,13 @@ pub fn run_main(args: Args) -> Result<()> {
     }
     let server = Server::from_listener(listener, None)
         .map_err(|err| anyhow!("creating HTTP server: {err}"))?;
+    // Use no_proxy to avoid a bug in the system-configuration crate that
+    // can result in a panic. See #8912.
     let client = Arc::new(
         Client::builder()
             // Disable reqwest's 30s default so long-lived response streams keep flowing.
             .timeout(None::<Duration>)
+            .no_proxy()
             .build()
             .context("building reqwest client")?,
     );

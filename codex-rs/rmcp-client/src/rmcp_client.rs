@@ -272,8 +272,10 @@ impl RmcpClient {
                 http_config = http_config.auth_header(bearer_token);
             }
 
+            // Use no_proxy to avoid a bug in the system-configuration crate that
+            // can result in a panic. See #8912.
             let http_client =
-                apply_default_headers(reqwest::Client::builder(), &default_headers).build()?;
+                apply_default_headers(reqwest::Client::builder().no_proxy(), &default_headers).build()?;
 
             let transport = StreamableHttpClientTransport::with_client(http_client, http_config);
             PendingTransport::StreamableHttp { transport }
@@ -559,8 +561,10 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<AuthClient<reqwest::Client>>,
     OAuthPersistor,
 )> {
+    // Use no_proxy to avoid a bug in the system-configuration crate that
+    // can result in a panic. See #8912.
     let http_client =
-        apply_default_headers(reqwest::Client::builder(), &default_headers).build()?;
+        apply_default_headers(reqwest::Client::builder().no_proxy(), &default_headers).build()?;
     let mut oauth_state = OAuthState::new(url.to_string(), Some(http_client.clone())).await?;
 
     oauth_state

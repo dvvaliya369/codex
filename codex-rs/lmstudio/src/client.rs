@@ -29,8 +29,11 @@ impl LMStudioClient {
             )
         })?;
 
+        // Use no_proxy to avoid a bug in the system-configuration crate that
+        // can result in a panic. See #8912.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -192,8 +195,11 @@ impl LMStudioClient {
     /// Low-level constructor given a raw host root, e.g. "http://localhost:1234".
     #[cfg(test)]
     fn from_host_root(host_root: impl Into<String>) -> Self {
+        // Use no_proxy to avoid a bug in the system-configuration crate that
+        // can result in a panic. See #8912.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {

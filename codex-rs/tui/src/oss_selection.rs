@@ -359,8 +359,11 @@ async fn check_ollama_status() -> ProviderStatus {
 }
 
 async fn check_port_status(port: u16) -> io::Result<bool> {
+    // Use no_proxy to avoid a bug in the system-configuration crate that
+    // can result in a panic. See #8912.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
+        .no_proxy()
         .build()
         .map_err(io::Error::other)?;
 

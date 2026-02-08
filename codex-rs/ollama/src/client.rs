@@ -61,8 +61,11 @@ impl OllamaClient {
             .expect("oss provider must have a base_url");
         let uses_openai_compat = is_openai_compatible_base_url(base_url);
         let host_root = base_url_to_host_root(base_url);
+        // Use no_proxy to avoid a bug in the system-configuration crate that
+        // can result in a panic. See #8912.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         let client = Self {
@@ -245,8 +248,11 @@ impl OllamaClient {
     /// Low-level constructor given a raw host root, e.g. "http://localhost:11434".
     #[cfg(test)]
     fn from_host_root(host_root: impl Into<String>) -> Self {
+        // Use no_proxy to avoid a bug in the system-configuration crate that
+        // can result in a panic. See #8912.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
