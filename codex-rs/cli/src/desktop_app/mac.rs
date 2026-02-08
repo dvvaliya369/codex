@@ -1,8 +1,10 @@
 use anyhow::Context as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use tempfile::Builder;
 use tokio::process::Command;
+use tokio::time::sleep;
 
 pub async fn run_mac_app_open_or_install(
     workspace: PathBuf,
@@ -47,6 +49,14 @@ async fn open_codex_app(app_path: &Path, workspace: &Path) -> anyhow::Result<()>
         "Opening workspace {workspace}...",
         workspace = workspace.display()
     );
+    
+    // Capture diagnostic info before launch
+    let log_dir = get_app_log_directory()?;
+    eprintln!("Checking for crash logs in {log_dir}...", log_dir = log_dir.display());
+    
+    // Write a launch marker to help with debugging
+    write_launch_marker(&log_dir)?;
+    
     let status = Command::new("open")
         .arg("-a")
         .arg(app_path)
@@ -55,15 +65,28 @@ async fn open_codex_app(app_path: &Path, workspace: &Path) -> anyhow::Result<()>
         .await
         .context("failed to invoke `open`")?;
 
-    if status.success() {
-        return Ok(());
+    if !status.success() {
+        anyhow::bail!(
+            "`open -a {app_path} {workspace}` exited with {status}",
+            app_path = app_path.display(),
+            workspace = workspace.display()
+        );
+    }
+    
+    // Give the app time to launch and potentially crash
+    eprintln!("Waiting for app to launch...");
+    sleep(Duration::from_secs(3)).await;
+    
+    // Check if the app is still running
+    if !is_codex_app_running().await {
+        eprintln!("WARNING: Codex.app does not appear to be running after launch.");
+        eprintln!("This may indicate a crash or early termination.");
+        check_for_crash_logs(&log_dir).await?;
+    } else {
+        eprintln!("Codex.app launched successfully.");
     }
 
-    anyhow::bail!(
-        "`open -a {app_path} {workspace}` exited with {status}",
-        app_path = app_path.display(),
-        workspace = workspace.display()
-    );
+    Ok(())
 }
 
 async fn download_and_install_codex_to_user_applications(dmg_url: &str) -> anyhow::Result<PathBuf> {
@@ -254,6 +277,229 @@ fn parse_hdiutil_attach_mount_point(output: &str) -> Option<String> {
             .find(|field| field.starts_with("/Volumes/"))
             .map(str::to_string)
     })
+}
+
+async fn is_codex_app_running() -> bool {
+    let output = Command::new("pgrep")
+        .arg("-f")
+        .arg("Codex.app")
+        .output()
+        .await;
+    
+    match output {
+        Ok(output) => output.status.success() && !output.stdout.is_empty(),
+        Err(_) => false,
+    }
+}
+
+fn get_app_log_directory() -> anyhow::Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join("Library/Logs/Codex"))
+}
+
+fn write_launch_marker(log_dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(log_dir)?;
+    let marker_file = log_dir.join("codex-cli-launch.log");
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    
+    let marker_content = format!(
+        "[{}] Codex.app launch initiated by CLI\n",
+        timestamp
+    );
+    
+    std::fs::write(&marker_file, marker_content).with_context(|| {
+        format!(
+            "Failed to write launch marker to {marker_file}",
+            marker_file = marker_file.display()
+        )
+    })?;
+    
+    Ok(())
+}
+
+async fn check_for_crash_logs(log_dir: &Path) -> anyhow::Result<()> {
+    eprintln!("\n=== Diagnostic Information ===");
+    
+    // Check console logs
+    check_console_logs().await;
+    
+    // Check application logs
+    if log_dir.exists() {
+        eprintln!("\nChecking application logs at {log_dir}...", log_dir = log_dir.display());
+        check_app_logs(log_dir).await;
+    } else {
+        eprintln!("\nApplication log directory does not exist: {log_dir}", log_dir = log_dir.display());
+    }
+    
+    // Check DiagnosticReports
+    check_diagnostic_reports().await;
+    
+    // Check system.log for crashes
+    check_system_log().await;
+    
+    eprintln!("\n=== End Diagnostic Information ===\n");
+    eprintln!("If the app continues to crash, please report this issue with the diagnostic information above.");
+    eprintln!("You can also check Console.app for more detailed crash information.");
+    
+    Ok(())
+}
+
+async fn check_console_logs() {
+    eprintln!("\nChecking recent console logs for Codex.app...");
+    let output = Command::new("log")
+        .arg("show")
+        .arg("--predicate")
+        .arg("processImagePath CONTAINS 'Codex'")
+        .arg("--style")
+        .arg("syslog")
+        .arg("--last")
+        .arg("5m")
+        .output()
+        .await;
+    
+    match output {
+        Ok(output) if output.status.success() => {
+            let logs = String::from_utf8_lossy(&output.stdout);
+            if !logs.trim().is_empty() {
+                eprintln!("Recent console logs:");
+                for line in logs.lines().rev().take(20).rev() {
+                    eprintln!("  {line}");
+                }
+            } else {
+                eprintln!("No recent console logs found for Codex.app");
+            }
+        }
+        Ok(output) => {
+            eprintln!("Failed to retrieve console logs: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        Err(e) => {
+            eprintln!("Could not run log command: {e}");
+        }
+    }
+}
+
+async fn check_app_logs(log_dir: &Path) {
+    let read_result = std::fs::read_dir(log_dir);
+    match read_result {
+        Ok(entries) => {
+            let mut found_logs = false;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with(".log") || name.starts_with("codex") {
+                        found_logs = true;
+                        eprintln!("Found log file: {name}");
+                        if let Ok(contents) = std::fs::read_to_string(&path) {
+                            let lines: Vec<_> = contents.lines().rev().take(10).collect();
+                            eprintln!("  Last 10 lines:");
+                            for line in lines.iter().rev() {
+                                eprintln!("    {line}");
+                            }
+                        }
+                    }
+                }
+            }
+            if !found_logs {
+                eprintln!("No log files found in application log directory");
+            }
+        }
+        Err(e) => {
+            eprintln!("Could not read log directory: {e}");
+        }
+    }
+}
+
+async fn check_diagnostic_reports() {
+    let home = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h),
+        None => return,
+    };
+    
+    let diagnostic_dir = home.join("Library/Logs/DiagnosticReports");
+    eprintln!("\nChecking {diagnostic_dir} for crash reports...", diagnostic_dir = diagnostic_dir.display());
+    
+    if !diagnostic_dir.exists() {
+        eprintln!("DiagnosticReports directory does not exist");
+        return;
+    }
+    
+    let read_result = std::fs::read_dir(&diagnostic_dir);
+    match read_result {
+        Ok(entries) => {
+            let mut crash_reports: Vec<_> = entries
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?;
+                    if name.starts_with("Codex") && (name.ends_with(".crash") || name.ends_with(".ips")) {
+                        let metadata = entry.metadata().ok()?;
+                        Some((path, metadata.modified().ok()?))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            crash_reports.sort_by_key(|(_, time)| *time);
+            
+            if crash_reports.is_empty() {
+                eprintln!("No crash reports found for Codex.app");
+                eprintln!("Note: macOS may not generate crash reports for all types of failures.");
+            } else {
+                eprintln!("Found {} crash report(s):", crash_reports.len());
+                for (path, modified) in crash_reports.iter().rev().take(3) {
+                    eprintln!("  - {} (modified: {modified:?})", path.display());
+                    if let Ok(contents) = std::fs::read_to_string(path) {
+                        let lines: Vec<_> = contents.lines().take(30).collect();
+                        eprintln!("    First 30 lines:");
+                        for line in lines {
+                            eprintln!("      {line}");
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Could not read DiagnosticReports: {e}");
+        }
+    }
+}
+
+async fn check_system_log() {
+    eprintln!("\nChecking for crash-related system logs...");
+    let output = Command::new("log")
+        .arg("show")
+        .arg("--predicate")
+        .arg("(processImagePath CONTAINS 'Codex' OR message CONTAINS 'Codex') AND (eventMessage CONTAINS 'crash' OR eventMessage CONTAINS 'terminate' OR eventMessage CONTAINS 'exit')")
+        .arg("--style")
+        .arg("syslog")
+        .arg("--last")
+        .arg("10m")
+        .output()
+        .await;
+    
+    match output {
+        Ok(output) if output.status.success() => {
+            let logs = String::from_utf8_lossy(&output.stdout);
+            if !logs.trim().is_empty() {
+                eprintln!("Recent crash-related logs:");
+                for line in logs.lines().rev().take(15).rev() {
+                    eprintln!("  {line}");
+                }
+            } else {
+                eprintln!("No crash-related system logs found");
+            }
+        }
+        Ok(output) => {
+            eprintln!("Failed to check system logs: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        Err(e) => {
+            eprintln!("Could not run log command: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
