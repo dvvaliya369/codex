@@ -8,8 +8,14 @@ use core_foundation::string::CFString;
 use core_foundation::string::CFStringRef;
 use std::ffi::c_void;
 use std::io;
+use std::time::Duration;
 use tokio::task;
 use toml::Value as TomlValue;
+
+/// Timeout for loading managed preferences via CoreFoundation FFI.
+/// `CFPreferencesCopyAppValue` can stall if the preferences daemon is
+/// unresponsive, so we cap the wait to avoid blocking app startup.
+const MANAGED_PREFERENCES_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MANAGED_PREFERENCES_APPLICATION_ID: &str = "com.openai.codex";
 const MANAGED_PREFERENCES_CONFIG_KEY: &str = "config_toml_base64";
@@ -34,15 +40,27 @@ pub(crate) async fn load_managed_admin_config_layer(
         };
     }
 
-    match task::spawn_blocking(load_managed_admin_config).await {
-        Ok(result) => result,
-        Err(join_err) => {
+    match tokio::time::timeout(
+        MANAGED_PREFERENCES_TIMEOUT,
+        task::spawn_blocking(load_managed_admin_config),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(join_err)) => {
             if join_err.is_cancelled() {
                 tracing::error!("Managed config load task was cancelled");
             } else {
                 tracing::error!("Managed config load task failed: {join_err}");
             }
             Err(io::Error::other("Failed to load managed config"))
+        }
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = MANAGED_PREFERENCES_TIMEOUT.as_secs(),
+                "Timed out loading managed config from macOS preferences; skipping"
+            );
+            Ok(None)
         }
     }
 }
@@ -72,20 +90,32 @@ pub(crate) async fn load_managed_admin_requirements_toml(
         return Ok(());
     }
 
-    match task::spawn_blocking(load_managed_admin_requirements).await {
-        Ok(result) => {
+    match tokio::time::timeout(
+        MANAGED_PREFERENCES_TIMEOUT,
+        task::spawn_blocking(load_managed_admin_requirements),
+    )
+    .await
+    {
+        Ok(Ok(result)) => {
             if let Some(requirements) = result? {
                 target.merge_unset_fields(managed_preferences_requirements_source(), requirements);
             }
             Ok(())
         }
-        Err(join_err) => {
+        Ok(Err(join_err)) => {
             if join_err.is_cancelled() {
                 tracing::error!("Managed requirements load task was cancelled");
             } else {
                 tracing::error!("Managed requirements load task failed: {join_err}");
             }
             Err(io::Error::other("Failed to load managed requirements"))
+        }
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = MANAGED_PREFERENCES_TIMEOUT.as_secs(),
+                "Timed out loading managed requirements from macOS preferences; skipping"
+            );
+            Ok(())
         }
     }
 }

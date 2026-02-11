@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use codex_app_server_protocol::AuthMode as ApiAuthMode;
 use codex_otel::TelemetryAuthMode;
@@ -604,7 +605,35 @@ fn update_tokens(
     Ok(auth_dot_json)
 }
 
+const TOKEN_REFRESH_NETWORK_TIMEOUT: Duration = Duration::from_secs(10);
+
 async fn try_refresh_token(
+    refresh_token: String,
+    client: &CodexHttpClient,
+) -> Result<RefreshResponse, RefreshTokenError> {
+    match tokio::time::timeout(
+        TOKEN_REFRESH_NETWORK_TIMEOUT,
+        try_refresh_token_inner(refresh_token, client),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = TOKEN_REFRESH_NETWORK_TIMEOUT.as_secs(),
+                "Token refresh request timed out"
+            );
+            Err(RefreshTokenError::Transient(std::io::Error::other(
+                format!(
+                    "Token refresh timed out after {}s",
+                    TOKEN_REFRESH_NETWORK_TIMEOUT.as_secs()
+                ),
+            )))
+        }
+    }
+}
+
+async fn try_refresh_token_inner(
     refresh_token: String,
     client: &CodexHttpClient,
 ) -> Result<RefreshResponse, RefreshTokenError> {

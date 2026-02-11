@@ -23,6 +23,7 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 
 const CLOUD_REQUIREMENTS_TIMEOUT: Duration = Duration::from_secs(15);
+const CLOUD_REQUIREMENTS_PER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_REQUIREMENTS_MAX_ATTEMPTS: usize = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,18 +151,25 @@ impl CloudRequirementsService {
 
     async fn fetch_with_retries(&self, auth: &CodexAuth) -> Option<ConfigRequirementsToml> {
         for attempt in 1..=CLOUD_REQUIREMENTS_MAX_ATTEMPTS {
-            let fetch_result = self
-                .fetcher
-                .fetch_requirements(auth)
-                .await
-                .and_then(|contents| {
-                    contents.map_or(Ok(None), |contents| {
-                        parse_cloud_requirements(&contents).map_err(|err| {
-                            tracing::warn!(error = %err, "Failed to parse cloud requirements");
-                            FetchCloudRequirementsStatus::Parse
+            let fetch_result =
+                match timeout(CLOUD_REQUIREMENTS_PER_ATTEMPT_TIMEOUT, self.fetcher.fetch_requirements(auth)).await {
+                    Ok(result) => result.and_then(|contents| {
+                        contents.map_or(Ok(None), |contents| {
+                            parse_cloud_requirements(&contents).map_err(|err| {
+                                tracing::warn!(error = %err, "Failed to parse cloud requirements");
+                                FetchCloudRequirementsStatus::Parse
+                            })
                         })
-                    })
-                });
+                    }),
+                    Err(_) => {
+                        tracing::warn!(
+                            attempt,
+                            timeout_secs = CLOUD_REQUIREMENTS_PER_ATTEMPT_TIMEOUT.as_secs(),
+                            "Cloud requirements fetch attempt timed out"
+                        );
+                        Err(FetchCloudRequirementsStatus::Request)
+                    }
+                };
 
             match fetch_result {
                 Ok(requirements) => return requirements,
