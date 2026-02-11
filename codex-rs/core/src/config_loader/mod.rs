@@ -110,9 +110,24 @@ pub async fn load_config_layers_state(
 ) -> io::Result<ConfigLayerStack> {
     let mut config_requirements_toml = ConfigRequirementsWithSources::default();
 
-    if let Some(requirements) = cloud_requirements.get().await {
-        config_requirements_toml
-            .merge_unset_fields(RequirementSource::CloudRequirements, requirements);
+    // Add a short timeout for cloud requirements to prevent blocking app startup.
+    // Cloud requirements are best-effort, so we continue without them if the fetch
+    // takes too long (e.g., in restricted network environments).
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        cloud_requirements.get()
+    ).await {
+        Ok(Some(requirements)) => {
+            config_requirements_toml
+                .merge_unset_fields(RequirementSource::CloudRequirements, requirements);
+        }
+        Ok(None) => {
+            // No cloud requirements available
+        }
+        Err(_) => {
+            // Timeout - continue without cloud requirements
+            tracing::debug!("Cloud requirements fetch timed out during config load; continuing without them");
+        }
     }
 
     #[cfg(target_os = "macos")]
